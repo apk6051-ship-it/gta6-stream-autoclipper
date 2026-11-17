@@ -1,0 +1,71 @@
+# GTA 6 Auto-Stream Clipper & YouTube Auto-Uploader Configuration
+
+# Discovery Settings
+discovery:
+  enabled: true
+  # Target games to search for (GTA 6 primary, GTA 5 fallback for testing before launch)
+  game_query: "Grand Theft Auto VI"
+  fallback_game_query: "Grand Theft Auto V"
+  platforms: ["twitch", "youtube"]
+  # A stream is considered "reliable" only if it meets this viewer threshold
+  min_viewers: 500
+  # Prioritize manual streamers if defined, else top viewer count stream
+  max_streams_to_track: 1
+
+# Manual streamer handles or URLs (optional override)
+# e.g.: ["kaicenat", "xqc", "https://www.youtube.com/watch?v=..."]
+manual_targets: []
+
+# Spike & Clipping Trigger Settings
+clipping:
+  # Multiplier above rolling average to trigger a clip (e.g. 3.0x normal chat speed)
+  spike_multiplier: 3.0
+  # Minimum messages in window to consider a valid spike
+  min_spike_messages: 15
+  # Analysis window in seconds
+  window_sec: 10
+  # Baseline calculation period
+  baseline_sec: 60
+  # Clip length settings
+  clip_duration_sec: 35
+  pre_spike_sec: 25   # Capture 25s before chat exploded
+  post_spike_sec: 10  # Capture 10s after
+  cooldown_sec: 180   # Don't create another clip for 3 minutes
+
+# Video Formatting (YouTube Shorts 9:16)
+video:
+  width: 1080
+  height: 1920
+  # Mode: "blur_backdrop" (gameplay centered with blurred background) or "center_crop"
+  layout_mode: "blur_backdrop"
+  add_captions: true
+  font_size: 24
+  font_color: "&H00FFFF" # Yellow/gold styled subtitle text
+
+# YouTube Uploader Settings
+youtube:
+  enabled: true
+  # "public", "unlisted", or "private"
+  privacy_status: "public"
+  title_template: "INSANE GTA 6 MOMENT! 😱🔥 #{game} #Shorts"
+  description: |
+    Unbelievable moment from the live GTA 6 stream!
+    Subscribe for the fastest GTA 6 clips, stunts, and viral moments.
+
+    #GTA6 #GrandTheftAuto6 #Shorts #Gaming #Livestream #Trending
+  tags:
+    - "GTA 6"
+    - "Grand Theft Auto VI"
+    - "GTA 6 Gameplay"
+    - "Shorts"
+    - "Gaming"
+    - "Twitch Clips"
+    - "Viral"
+
+# Scheduling Settings
+scheduler:
+  interval_hours: 2
+  # Run duration per cycle in minutes before re-checking discovery (e.g. 115 mins)
+  stream_session_minutes: 115
+  # If no stream has >= min_viewers, exit process immediately
+  exit_if_no_stream: true

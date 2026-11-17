@@ -1,0 +1,178 @@
+"""
+Stream Discovery Module
+Automatically discovers active, high-traffic GTA 6 / GTA 5 livestreams on Twitch and YouTube.
+Filters by viewer count to ensure the stream is active and reliable.
+"""
+
+import logging
+import requests
+import subprocess
+import json
+from typing import Optional, Dict, Any, List
+
+logger = logging.getLogger(__name__)
+
+TWITCH_PUBLIC_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+
+GQL_QUERY = """
+query GetStreams($game: String!, $first: Int!) {
+  game(name: $game) {
+    name
+    streams(first: $first) {
+      edges {
+        node {
+          id
+          title
+          viewersCount
+          broadcaster {
+            login
+            displayName
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def get_top_twitch_streams(game_name: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Fetches top active streams for a specific game category on Twitch."""
+    headers = {
+        "Client-ID": TWITCH_PUBLIC_CLIENT_ID,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+    try:
+        resp = requests.post(
+            "https://gql.twitch.tv/gql",
+            json={"query": GQL_QUERY, "variables": {"game": game_name, "first": limit}},
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            game_data = data.get("data", {}).get("game")
+            if not game_data:
+                return []
+            edges = game_data.get("streams", {}).get("edges", [])
+            results = []
+            for edge in edges:
+                node = edge["node"]
+                broadcaster = node["broadcaster"]
+                results.append({
+                    "platform": "twitch",
+                    "channel": broadcaster["login"],
+                    "display_name": broadcaster["displayName"],
+                    "title": node.get("title", ""),
+                    "viewers": node.get("viewersCount", 0),
+                    "url": f"https://twitch.tv/{broadcaster['login']}",
+                })
+            return results
+    except Exception as e:
+        logger.warning(f"Error querying Twitch GQL: {e}")
+    return []
+
+
+def get_top_youtube_streams(search_query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Searches for active YouTube livestreams matching query using yt-dlp."""
+    try:
+        cmd = [
+            "yt-dlp",
+            f"ytsearch{limit}:{search_query} live",
+            "--dump-json",
+            "--flat-playlist",
+            "--no-playlist",
+            "--match-filter", "is_live",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        streams = []
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+                viewers = item.get("concurrent_view_count") or item.get("view_count") or 0
+                streams.append({
+                    "platform": "youtube",
+                    "channel": item.get("uploader", "Unknown"),
+                    "display_name": item.get("channel", "Unknown"),
+                    "title": item.get("title", ""),
+                    "viewers": int(viewers) if viewers else 0,
+                    "url": item.get("url") or f"https://www.youtube.com/watch?v={item.get('id')}",
+                    "video_id": item.get("id"),
+                })
+            except Exception:
+                continue
+        return sorted(streams, key=lambda x: x["viewers"], reverse=True)
+    except Exception as e:
+        logger.warning(f"Error querying YouTube livestreams: {e}")
+    return []
+
+
+def discover_reliable_stream(config: dict) -> Optional[Dict[str, Any]]:
+    """
+    Finds the most reliable stream based on config:
+    1. Checks manual targets first (if specified).
+    2. Searches for primary game (e.g. Grand Theft Auto VI).
+    3. If none found, falls back to fallback_game_query (e.g. Grand Theft Auto V).
+    4. Filters candidates by min_viewers.
+    5. Returns the stream with the highest viewership, or None if no stream meets criteria.
+    """
+    disc_cfg = config.get("discovery", {})
+    min_viewers = disc_cfg.get("min_viewers", 500)
+    primary_game = disc_cfg.get("game_query", "Grand Theft Auto VI")
+    fallback_game = disc_cfg.get("fallback_game_query", "Grand Theft Auto V")
+    manual_targets = config.get("manual_targets", [])
+
+    # 1. Check manual targets if provided
+    for target in manual_targets:
+        if "twitch.tv" in target or not target.startswith("http"):
+            username = target.split("/")[-1].replace("@", "")
+            # Verify if live
+            streams = get_top_twitch_streams(primary_game, limit=20) + get_top_twitch_streams(fallback_game, limit=20)
+            for s in streams:
+                if s["channel"].lower() == username.lower():
+                    logger.info(f"Target streamer {username} is LIVE with {s['viewers']} viewers!")
+                    return s
+
+    candidates: List[Dict[str, Any]] = []
+
+    # 2. Try primary game query
+    logger.info(f"Scanning for active '{primary_game}' livestreams...")
+    candidates.extend(get_top_twitch_streams(primary_game, limit=10))
+
+    # 3. If primary has no streams, try fallback game
+    if not candidates and fallback_game:
+        logger.info(f"No active '{primary_game}' streams. Checking fallback '{fallback_game}'...")
+        candidates.extend(get_top_twitch_streams(fallback_game, limit=10))
+
+    # Optional: check YouTube if configured
+    if "youtube" in disc_cfg.get("platforms", []):
+        logger.info("Scanning YouTube for active livestreams...")
+        yt_candidates = get_top_youtube_streams(primary_game, limit=5)
+        if not yt_candidates and fallback_game:
+            yt_candidates = get_top_youtube_streams(fallback_game, limit=5)
+        candidates.extend(yt_candidates)
+
+    if not candidates:
+        logger.info("No active streams found in any category.")
+        return None
+
+    # Filter by minimum viewer count
+    reliable = [s for s in candidates if s["viewers"] >= min_viewers]
+
+    if not reliable:
+        top_viewer_count = max(s["viewers"] for s in candidates)
+        logger.info(
+            f"Streams exist, but top viewer count ({top_viewer_count}) is below reliability threshold ({min_viewers})."
+        )
+        return None
+
+    # Sort descending by viewer count
+    reliable.sort(key=lambda s: s["viewers"], reverse=True)
+    best_stream = reliable[0]
+    logger.info(
+        f"Selected Reliable Stream: [{best_stream['platform'].upper()}] {best_stream['display_name']} "
+        f"({best_stream['viewers']:,} viewers) - {best_stream['title'][:60]}"
+    )
+    return best_stream

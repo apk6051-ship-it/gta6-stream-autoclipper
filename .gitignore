@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.venv/
+env/
+venv/
+
+# Stream & Clip Temporary Files
+buffer/
+clips/
+temp/
+*.ts
+*.mp4
+*.m4s
+*.m3u8
+
+# YouTube Credentials & Tokens
+client_secret*.json
+token.json
+oauth_credentials.json
+
+# Logs
+*.log
+logs/
+.system_generated/
