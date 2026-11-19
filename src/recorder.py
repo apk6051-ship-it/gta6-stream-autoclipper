@@ -166,8 +166,8 @@ class StreamRecorder:
         concat_list_path = os.path.join(self.buffer_dir, f"concat_{int(time.time())}.txt")
         with open(concat_list_path, "w", encoding="utf-8") as f:
             for seg in selected_files:
-                # Escape path for ffmpeg concat
-                safe_path = seg.replace("\\", "/")
+                # Use absolute path so FFmpeg concat finds the file reliably
+                safe_path = os.path.abspath(seg).replace("\\", "/")
                 f.write(f"file '{safe_path}'\n")
 
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")

@@ -57,7 +57,7 @@ class YouTubeChatMonitor:
 
     def _run(self):
         try:
-            self.chat = pytchat.create(video_id=self.video_id)
+            self.chat = pytchat.create(video_id=self.video_id, interruptable=False)
         except Exception as e:
             logger.error(f"Failed to attach to YouTube live chat: {e}")
             return
