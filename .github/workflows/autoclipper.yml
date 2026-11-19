@@ -1,0 +1,49 @@
+name: GTA 6 Stream Auto-Clipper
+
+on:
+  schedule:
+    # Runs every 2 hours UTC: at minute 0 past every 2nd hour
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime!
+
+jobs:
+  clip-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore YouTube Credentials from Secrets
+        run: |
+          if [ -n "${{ secrets.YOUTUBE_CLIENT_SECRET }}" ]; then
+            echo '${{ secrets.YOUTUBE_CLIENT_SECRET }}' > client_secret.json
+            echo "client_secret.json restored."
+          fi
+          if [ -n "${{ secrets.YOUTUBE_TOKEN }}" ]; then
+            echo '${{ secrets.YOUTUBE_TOKEN }}' > token.json
+            echo "token.json restored."
+          fi
+
+      - name: Run Auto-Clipper Session
+        env:
+          SESSION_MINUTES: "45"
+        run: |
+          python -m src.main

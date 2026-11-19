@@ -148,7 +148,8 @@ def run_session():
         chat_monitor.start()
 
     # Step 6: Run session duration
-    session_minutes = config.get("scheduler", {}).get("stream_session_minutes", 115)
+    env_mins = os.environ.get("SESSION_MINUTES")
+    session_minutes = int(env_mins) if env_mins else config.get("scheduler", {}).get("stream_session_minutes", 115)
     logger.info(f"Clipper active and monitoring for {session_minutes} minutes...")
 
     try:
