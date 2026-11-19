@@ -1,14 +1,16 @@
 """
-Stream Discovery Module
-Automatically discovers active, high-traffic GTA 6 / GTA 5 livestreams on Twitch and YouTube.
-Filters by viewer count to ensure the stream is active and reliable.
+Unified Content Discovery Module
+Discovers both:
+1. Live Streams: Active high-traffic GTA 6 / GTA 5 livestreams on Twitch and YouTube.
+2. Uploaded Videos (VODs): High-performing recently uploaded gameplay walkthroughs and videos.
 """
 
+import os
 import logging
 import requests
 import subprocess
 import json
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,22 @@ query GetStreams($game: String!, $first: Int!) {
   }
 }
 """
+
+HISTORY_FILE = "processed_videos.txt"
+
+
+def get_processed_ids() -> Set[str]:
+    """Returns set of video IDs that have already been clipped to prevent duplicates."""
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return set(line.strip() for line in f if line.strip())
+    return set()
+
+
+def mark_video_processed(video_id: str):
+    """Saves video ID to history file."""
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{video_id}\n")
 
 
 def get_top_twitch_streams(game_name: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -109,26 +127,60 @@ def get_top_youtube_streams(search_query: str, limit: int = 5) -> List[Dict[str,
     return []
 
 
+def get_top_uploaded_videos(search_query: str, limit: int = 10, min_views: int = 1000) -> List[Dict[str, Any]]:
+    """Searches YouTube for high-performing uploaded videos (non-live VODs)."""
+    processed = get_processed_ids()
+    try:
+        cmd = [
+            "yt-dlp",
+            f"ytsearch{limit}:{search_query}",
+            "--dump-json",
+            "--flat-playlist",
+            "--no-playlist",
+            "--match-filter", "!is_live & duration > 180 & duration < 7200",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        videos = []
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+                vid = item.get("id")
+                if not vid or vid in processed:
+                    continue
+                views = int(item.get("view_count") or 0)
+                if views >= min_views:
+                    videos.append({
+                        "platform": "youtube",
+                        "video_id": vid,
+                        "title": item.get("title", ""),
+                        "channel": item.get("uploader") or item.get("channel", "Unknown"),
+                        "display_name": item.get("channel", "Unknown"),
+                        "viewers": views,
+                        "views": views,
+                        "duration": item.get("duration", 0),
+                        "url": f"https://www.youtube.com/watch?v={vid}",
+                    })
+            except Exception:
+                continue
+        return sorted(videos, key=lambda x: x["views"], reverse=True)
+    except Exception as e:
+        logger.warning(f"Error querying uploaded videos: {e}")
+    return []
+
+
 def discover_reliable_stream(config: dict) -> Optional[Dict[str, Any]]:
-    """
-    Finds the most reliable stream based on config:
-    1. Checks manual targets first (if specified).
-    2. Searches for primary game (e.g. Grand Theft Auto VI).
-    3. If none found, falls back to fallback_game_query (e.g. Grand Theft Auto V).
-    4. Filters candidates by min_viewers.
-    5. Returns the stream with the highest viewership, or None if no stream meets criteria.
-    """
+    """Checks for active reliable live streams."""
     disc_cfg = config.get("discovery", {})
     min_viewers = disc_cfg.get("min_viewers", 500)
     primary_game = disc_cfg.get("game_query", "Grand Theft Auto VI")
     fallback_game = disc_cfg.get("fallback_game_query", "Grand Theft Auto V")
     manual_targets = config.get("manual_targets", [])
 
-    # 1. Check manual targets if provided
     for target in manual_targets:
         if "twitch.tv" in target or not target.startswith("http"):
             username = target.split("/")[-1].replace("@", "")
-            # Verify if live
             streams = get_top_twitch_streams(primary_game, limit=20) + get_top_twitch_streams(fallback_game, limit=20)
             for s in streams:
                 if s["channel"].lower() == username.lower():
@@ -136,17 +188,13 @@ def discover_reliable_stream(config: dict) -> Optional[Dict[str, Any]]:
                     return s
 
     candidates: List[Dict[str, Any]] = []
-
-    # 2. Try primary game query
     logger.info(f"Scanning for active '{primary_game}' livestreams...")
     candidates.extend(get_top_twitch_streams(primary_game, limit=10))
 
-    # 3. If primary has no streams, try fallback game
     if not candidates and fallback_game:
         logger.info(f"No active '{primary_game}' streams. Checking fallback '{fallback_game}'...")
         candidates.extend(get_top_twitch_streams(fallback_game, limit=10))
 
-    # Optional: check YouTube if configured
     if "youtube" in disc_cfg.get("platforms", []):
         logger.info("Scanning YouTube for active livestreams...")
         yt_candidates = get_top_youtube_streams(primary_game, limit=5)
@@ -155,20 +203,16 @@ def discover_reliable_stream(config: dict) -> Optional[Dict[str, Any]]:
         candidates.extend(yt_candidates)
 
     if not candidates:
-        logger.info("No active streams found in any category.")
         return None
 
-    # Filter by minimum viewer count
     reliable = [s for s in candidates if s["viewers"] >= min_viewers]
-
     if not reliable:
         top_viewer_count = max(s["viewers"] for s in candidates)
         logger.info(
-            f"Streams exist, but top viewer count ({top_viewer_count}) is below reliability threshold ({min_viewers})."
+            f"Live streams exist, but top viewer count ({top_viewer_count}) is below threshold ({min_viewers})."
         )
         return None
 
-    # Sort descending by viewer count
     reliable.sort(key=lambda s: s["viewers"], reverse=True)
     best_stream = reliable[0]
     logger.info(
@@ -176,3 +220,44 @@ def discover_reliable_stream(config: dict) -> Optional[Dict[str, Any]]:
         f"({best_stream['viewers']:,} viewers) - {best_stream['title'][:60]}"
     )
     return best_stream
+
+
+def discover_content(config: dict) -> Optional[Dict[str, Any]]:
+    """
+    Unified Content Discovery (Live Stream + VOD Fallback):
+    1. Searches for live streams with >= min_viewers.
+    2. If no live stream is active, searches for top uploaded videos/VODs.
+    """
+    # 1. Live stream
+    stream = discover_reliable_stream(config)
+    if stream:
+        return {"mode": "live", "data": stream}
+
+    # 2. VOD / Uploaded Video fallback
+    vod_cfg = config.get("vod_clipping", {})
+    if vod_cfg.get("enabled", True):
+        disc_cfg = config.get("discovery", {})
+        query = disc_cfg.get("game_query", "Grand Theft Auto VI")
+        fallback_query = disc_cfg.get("fallback_game_query", "Grand Theft Auto V")
+        min_views = vod_cfg.get("min_views", 1000)
+
+        # Check manual targets for uploaded videos
+        for target in config.get("manual_targets", []):
+            if "youtube.com/watch" in target or "youtu.be/" in target:
+                logger.info(f"Target uploaded video configured: {target}")
+                return {"mode": "vod", "data": {"url": target, "title": "GTA Gameplay Highlight", "channel": "Target", "video_id": target.split("=")[-1]}}
+
+        logger.info(f"No active livestreams. Searching top uploaded '{query}' videos (VOD Mode)...")
+        videos = get_top_uploaded_videos(query, limit=10, min_views=min_views)
+        if not videos and fallback_query:
+            logger.info(f"Searching fallback '{fallback_query}' uploaded videos...")
+            videos = get_top_uploaded_videos(fallback_query, limit=10, min_views=min_views)
+
+        if videos:
+            best_video = videos[0]
+            logger.info(
+                f"Selected Uploaded Video: [{best_video['channel']}] ({best_video['views']:,} views) - {best_video['title'][:60]}"
+            )
+            return {"mode": "vod", "data": best_video}
+
+    return None

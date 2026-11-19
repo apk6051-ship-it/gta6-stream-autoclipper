@@ -16,6 +16,12 @@ discovery:
 # e.g.: ["kaicenat", "xqc", "https://www.youtube.com/watch?v=..."]
 manual_targets: []
 
+# VOD & Uploaded Video Highlight Settings (Used when no stream is active, or for manual links)
+vod_clipping:
+  enabled: true
+  min_views: 1000
+  clip_duration_sec: 35
+
 # Spike & Clipping Trigger Settings
 clipping:
   # Multiplier above rolling average to trigger a clip (e.g. 3.0x normal chat speed)

@@ -1,10 +1,8 @@
 """
-Main Orchestrator
-Executes a single detection and clipping session:
-1. Discovers if an active, reliable GTA stream is live.
-2. If NO reliable stream is found -> logs status and ends process cleanly (exit code 0).
-3. If reliable stream IS found -> initiates live recording, chat velocity tracking,
-   automatic clip extraction, vertical formatting, and YouTube upload.
+Main Orchestrator (Dual Engine: Live Stream + Uploaded VOD Clipper)
+1. Live Stream Mode: Discovers active streams, records circular buffer, catches chat bursts, cuts & uploads Shorts.
+2. VOD / Uploaded Video Mode: If no live stream is active, finds top uploaded GTA gameplay videos,
+   identifies peak replay/action moment, slices 35s with zero full-video download, converts to 9:16 Shorts & uploads.
 """
 
 import os
@@ -25,12 +23,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AutoClipper")
 
-from src.discovery import discover_reliable_stream
+from src.discovery import discover_content, mark_video_processed
 from src.twitch_chat import TwitchChatMonitor
 from src.youtube_chat import YouTubeChatMonitor
 from src.recorder import StreamRecorder
 from src.processor import VideoProcessor
 from src.uploader import YouTubeUploader
+from src.vod_clipper import get_video_info, find_best_highlight_timestamp, slice_video_highlight
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -41,27 +40,62 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
+def handle_vod_session(video: dict, config: dict, processor: VideoProcessor, uploader: Optional[YouTubeUploader]):
+    """Processes an uploaded video / VOD: locates peak moment, downloads 35s slice, formats and uploads."""
+    logger.info(f"Processing Uploaded VOD: [{video.get('channel')}] {video.get('title', '')[:60]}")
+    info = get_video_info(video["url"])
+    if not info:
+        logger.error(f"Could not load metadata for video: {video['url']}")
+        return
+
+    clip_duration = config.get("vod_clipping", {}).get("clip_duration_sec", 35)
+    start_sec, end_sec = find_best_highlight_timestamp(info, clip_duration=clip_duration)
+
+    timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+    os.makedirs("clips", exist_ok=True)
+    raw_slice_path = os.path.join("clips", f"raw_vod_{timestamp_str}.mp4")
+    short_clip_path = os.path.join("clips", f"short_vod_{timestamp_str}.mp4")
+
+    # 1. Download only the 35s highlight
+    if not slice_video_highlight(video["url"], start_sec, end_sec, raw_slice_path):
+        logger.error("Failed to extract VOD highlight slice.")
+        return
+
+    # 2. Reformat to 9:16 vertical Short
+    if not processor.format_for_shorts(raw_slice_path, short_clip_path):
+        logger.error("Failed to render 9:16 vertical Short.")
+        return
+
+    # 3. Mark video as processed to avoid duplicates
+    if video.get("video_id"):
+        mark_video_processed(video["video_id"])
+
+    # 4. Upload to YouTube
+    if uploader and os.path.exists("client_secret.json"):
+        yt_cfg = config.get("youtube", {})
+        title = yt_cfg.get("title_template", "INSANE GTA 6 MOMENT! 😱🔥 #{game} #Shorts").replace("{game}", "GTA6")
+        uploader.upload_short(
+            video_path=short_clip_path,
+            title=title,
+            description=yt_cfg.get("description", ""),
+            tags=yt_cfg.get("tags", ["GTA 6", "Shorts", "Gaming"]),
+            privacy_status=yt_cfg.get("privacy_status", "public"),
+        )
+    else:
+        logger.info(f"Short saved locally at: {short_clip_path}")
+
+    # Clean up raw slice to save disk space
+    try:
+        os.remove(raw_slice_path)
+    except Exception:
+        pass
+
+    logger.info("🎉 VOD Highlight successfully extracted, formatted and uploaded!")
+
+
 def run_session():
     logger.info("=== Starting GTA 6 Auto-Clipper Session ===")
     config = load_config()
-
-    # Step 1: Discover active reliable stream
-    stream = discover_reliable_stream(config)
-
-    if not stream:
-        logger.info(">>> No reliable stream available right now. Ending process cleanly. <<<")
-        sys.exit(0)
-
-    # Step 2: Initialize components
-    logger.info(f"Target locked: {stream['display_name']} ({stream['url']}) with {stream['viewers']:,} viewers.")
-
-    recorder = StreamRecorder(
-        stream_url=stream["url"],
-        buffer_dir="buffer",
-        clips_dir="clips",
-        segment_duration=4,
-        max_buffer_seconds=120,
-    )
 
     processor = VideoProcessor(
         output_width=config.get("video", {}).get("width", 1080),
@@ -72,10 +106,32 @@ def run_session():
     if config.get("youtube", {}).get("enabled", True):
         uploader = YouTubeUploader()
 
-    # Step 3: Define viral spike callback
+    # Step 1: Content Discovery (Live Stream or Uploaded VOD)
+    content = discover_content(config)
+
+    if not content:
+        logger.info(">>> No reliable live stream or uploaded video available right now. Ending cleanly. <<<")
+        sys.exit(0)
+
+    # Branch A: Uploaded VOD Mode
+    if content["mode"] == "vod":
+        handle_vod_session(content["data"], config, processor, uploader)
+        return
+
+    # Branch B: Live Stream Mode
+    stream = content["data"]
+    logger.info(f"Target Live Stream locked: {stream['display_name']} ({stream['url']}) with {stream['viewers']:,} viewers.")
+
+    recorder = StreamRecorder(
+        stream_url=stream["url"],
+        buffer_dir="buffer",
+        clips_dir="clips",
+        segment_duration=4,
+        max_buffer_seconds=120,
+    )
+
     def on_viral_moment(timestamp: float, current_msgs: int, baseline: float):
         logger.info(f"⚡ Processing viral spike event ({current_msgs} msgs / baseline {baseline:.1f})...")
-
         clip_cfg = config.get("clipping", {})
         clip_duration = clip_cfg.get("clip_duration_sec", 35)
 
@@ -84,7 +140,6 @@ def run_session():
             logger.warning("Failed to extract raw clip from stream buffer.")
             return
 
-        # Render 9:16 vertical Short
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
         short_clip_path = os.path.join("clips", f"short_{stream['channel']}_{timestamp_str}.mp4")
 
@@ -97,30 +152,21 @@ def run_session():
             logger.warning("Failed to format video for Shorts.")
             return
 
-        # Upload to YouTube
         if uploader and os.path.exists("client_secret.json"):
             yt_cfg = config.get("youtube", {})
-            title = yt_cfg.get("title_template", "INSANE GTA 6 MOMENT! 😱🔥 #GTA6 #Shorts").replace(
-                "{game}", "GTA6"
-            )
-            description = yt_cfg.get("description", "")
-            tags = yt_cfg.get("tags", ["GTA 6", "Shorts", "Gaming"])
-            privacy = yt_cfg.get("privacy_status", "public")
-
+            title = yt_cfg.get("title_template", "INSANE GTA 6 MOMENT! 😱🔥 #{game} #Shorts").replace("{game}", "GTA6")
             uploader.upload_short(
                 video_path=short_clip_path,
                 title=title,
-                description=description,
-                tags=tags,
-                privacy_status=privacy,
+                description=yt_cfg.get("description", ""),
+                tags=yt_cfg.get("tags", ["GTA 6", "Shorts", "Gaming"]),
+                privacy_status=yt_cfg.get("privacy_status", "public"),
             )
         else:
-            logger.info(f"Short saved locally at: {short_clip_path} (Add client_secret.json to auto-upload to YouTube)")
+            logger.info(f"Short saved locally at: {short_clip_path}")
 
-    # Step 4: Start recorder
     recorder.start()
 
-    # Step 5: Start chat velocity monitor
     chat_monitor = None
     clip_cfg = config.get("clipping", {})
     if stream["platform"] == "twitch":
@@ -147,7 +193,6 @@ def run_session():
     if chat_monitor:
         chat_monitor.start()
 
-    # Step 6: Run session duration
     env_mins = os.environ.get("SESSION_MINUTES")
     session_minutes = int(env_mins) if env_mins else config.get("scheduler", {}).get("stream_session_minutes", 115)
     logger.info(f"Clipper active and monitoring for {session_minutes} minutes...")
