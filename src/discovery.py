@@ -1,6 +1,7 @@
 """
-Streamed VOD Discovery Module (Twitch & YouTube)
+Streamed VOD Discovery Module (Twitch Focused Sequencer)
 Discovers past live streams and gameplay walkthroughs for GTA 6 / GTA 5.
+Sequentially iterates through all top Twitch GTA streams/creators one by one.
 Filters strictly for English audio/content and ensures no video is ever clipped twice.
 Twitch VODs are prioritized for cloud runners because they have zero bot/CAPTCHA blocks.
 """
@@ -8,7 +9,6 @@ Twitch VODs are prioritized for cloud runners because they have zero bot/CAPTCHA
 import os
 import logging
 import requests
-import subprocess
 import json
 from typing import Optional, Dict, Any, List, Set
 from src.lang_detector import is_english_content
@@ -17,6 +17,13 @@ logger = logging.getLogger(__name__)
 
 TWITCH_PUBLIC_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
 HISTORY_FILE = "processed_videos.txt"
+
+# Top GTA creators to track for VODs
+TOP_CREATORS = [
+    "kaicenat", "caseoh_", "stableronaldo", "xqc", "jynxzi",
+    "ishowspeed", "fanum", "theburntpeanut", "yourragegaming",
+    "darkviperau", "nickmercs", "timthetatman", "ludwig", "jasontheween"
+]
 
 TWITCH_VODS_QUERY = """
 query GetGameVideos($game: String!, $first: Int!) {
@@ -31,6 +38,31 @@ query GetGameVideos($game: String!, $first: Int!) {
           owner {
             displayName
             login
+            broadcastSettings {
+              language
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+TWITCH_CREATOR_QUERY = """
+query GetCreatorVideos($login: String!) {
+  user(login: $login) {
+    displayName
+    login
+    videos(first: 5, types: ARCHIVE) {
+      edges {
+        node {
+          id
+          title
+          viewCount
+          lengthSeconds
+          game {
+            name
           }
         }
       }
@@ -54,10 +86,10 @@ def mark_video_processed(video_id: str):
         f.write(f"{video_id}\n")
 
 
-def get_top_twitch_vods(game_name: str, limit: int = 15, min_views: int = 500) -> List[Dict[str, Any]]:
+def get_top_twitch_vods(game_name: str, limit: int = 40, min_views: int = 500) -> List[Dict[str, Any]]:
     """
-    Fetches top past stream broadcasts (VODs) from Twitch.
-    100% immune to cloud datacenter IP blocks.
+    Fetches top past stream broadcasts (VODs) from Twitch for a specific game category.
+    Filters for verified English broadcasts.
     """
     processed = get_processed_ids()
     headers = {
@@ -86,10 +118,16 @@ def get_top_twitch_vods(game_name: str, limit: int = 15, min_views: int = 500) -
                     continue
 
                 title = node.get("title", "")
-                owner = node.get("owner", {})
+                owner_data = node.get("owner") or {}
+                owner_name = owner_data.get("displayName") or owner_data.get("login", "Streamer")
+                lang = (owner_data.get("broadcastSettings") or {}).get("language", "").lower()
                 views = int(node.get("viewCount", 0))
 
-                # English check
+                # If Twitch reports broadcast language and it is not English, skip
+                if lang and not lang.startswith("en"):
+                    continue
+
+                # Content-based English check
                 if not is_english_content(title=title):
                     continue
 
@@ -98,84 +136,79 @@ def get_top_twitch_vods(game_name: str, limit: int = 15, min_views: int = 500) -
                         "platform": "twitch",
                         "video_id": vid,
                         "title": title,
-                        "channel": owner.get("displayName") or owner.get("login", "Streamer"),
+                        "channel": owner_name,
                         "views": views,
                         "duration": float(node.get("lengthSeconds", 3600)),
                         "url": f"https://www.twitch.tv/videos/{vid}",
                     })
-            return sorted(results, key=lambda x: x["views"], reverse=True)
+            return results
     except Exception as e:
-        logger.warning(f"Error querying Twitch VODs: {e}")
+        logger.warning(f"Error querying Twitch VODs for {game_name}: {e}")
     return []
 
 
-def get_top_youtube_vods(search_query: str, limit: int = 10, min_views: int = 2000) -> List[Dict[str, Any]]:
-    """Searches YouTube for stream VODs and full gameplay walkthroughs."""
+def get_creator_gta_vods(creators: List[str] = TOP_CREATORS) -> List[Dict[str, Any]]:
+    """
+    Checks specific top creators for any recent GTA streams or archives.
+    """
     processed = get_processed_ids()
-    search_term = f"{search_query} full stream gameplay walkthrough"
-
-    cmd = [
-        "yt-dlp",
-        "--extractor-args", "youtube:player_client=tv_embedded,mweb",
-        "--no-check-certificates",
-        f"ytsearch{limit}:{search_term}",
-        "--dump-json",
-        "--flat-playlist",
-        "--no-playlist",
-        "--match-filter", "!is_live & duration > 600 & duration < 28800",
-    ]
-
-    try:
-        logger.info(f"Searching YouTube for English streamed VODs: '{search_term}'...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        videos = []
-        for line in result.stdout.strip().split("\n"):
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-                vid = item.get("id")
-                if not vid or vid in processed:
+    headers = {
+        "Client-ID": TWITCH_PUBLIC_CLIENT_ID,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+    results = []
+    for creator in creators[:6]:  # Check first batch of top creators
+        try:
+            resp = requests.post(
+                "https://gql.twitch.tv/gql",
+                json={"query": TWITCH_CREATOR_QUERY, "variables": {"login": creator}},
+                headers=headers,
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                user_data = data.get("data", {}).get("user")
+                if not user_data:
                     continue
-
-                title = item.get("title", "")
-                channel = item.get("uploader") or item.get("channel", "Unknown")
-                views = int(item.get("view_count") or 0)
-
-                if not is_english_content(title=title, metadata=item):
-                    continue
-
-                if views >= min_views:
-                    videos.append({
-                        "platform": "youtube",
-                        "video_id": vid,
-                        "title": title,
-                        "channel": channel,
-                        "views": views,
-                        "duration": float(item.get("duration", 0)),
-                        "url": f"https://www.youtube.com/watch?v={vid}",
-                    })
-            except Exception:
-                continue
-        return sorted(videos, key=lambda x: x["views"], reverse=True)
-    except Exception as e:
-        logger.warning(f"Error querying YouTube VODs: {e}")
-    return []
+                videos = user_data.get("videos", {}).get("edges", [])
+                for v in videos:
+                    n = v["node"]
+                    vid = str(n["id"])
+                    if vid in processed:
+                        continue
+                    title = n.get("title", "")
+                    game_info = (n.get("game") or {}).get("name", "")
+                    # Match GTA titles or game tag
+                    if any(k in title.lower() or k in game_info.lower() for k in ["gta", "grand theft auto"]):
+                        if is_english_content(title):
+                            results.append({
+                                "platform": "twitch",
+                                "video_id": vid,
+                                "title": title,
+                                "channel": user_data.get("displayName", creator),
+                                "views": int(n.get("viewCount", 0)),
+                                "duration": float(n.get("lengthSeconds", 3600)),
+                                "url": f"https://www.twitch.tv/videos/{vid}",
+                            })
+        except Exception:
+            continue
+    return results
 
 
 def discover_next_stream_vod(config: dict) -> Optional[Dict[str, Any]]:
     """
-    Finds the next unclipped English stream VOD:
-    1. Checks manual targets first.
-    2. Prioritizes Twitch Stream VODs (immune to cloud IP bot blocks).
-    3. Falls back to YouTube VODs.
+    Finds the next unclipped English Twitch stream VOD in sequence:
+    1. Checks manual targets first if specified.
+    2. Builds queue of all top Twitch GTA 6 stream VODs + top creators.
+    3. Falls back to top Twitch GTA 5 stream VODs if needed.
+    4. Picks the next top-ranked stream that hasn't been clipped yet.
     """
     # 1. Manual targets override
     for target in config.get("manual_targets", []):
-        if "twitch.tv" in target or "youtube.com" in target or "youtu.be" in target:
+        if "twitch.tv" in target:
             vid = target.split("/")[-1].split("=")[-1].split("&")[0]
             if vid not in get_processed_ids():
-                logger.info(f"Target manual video found: {target}")
+                logger.info(f"Target manual Twitch stream found: {target}")
                 return {"url": target, "video_id": vid, "title": "GTA Stream Gameplay", "channel": "Streamer"}
 
     disc_cfg = config.get("discovery", {})
@@ -183,30 +216,42 @@ def discover_next_stream_vod(config: dict) -> Optional[Dict[str, Any]]:
     fallback_query = disc_cfg.get("fallback_game_query", "Grand Theft Auto V")
     min_views = config.get("vod_clipping", {}).get("min_views", 500)
 
-    # 2. Check Twitch Stream VODs (Cloud runner friendly)
-    twitch_candidates = get_top_twitch_vods(primary_query, limit=15, min_views=min_views)
-    if not twitch_candidates and fallback_query:
-        twitch_candidates = get_top_twitch_vods(fallback_query, limit=15, min_views=min_views)
+    # 2. Query Twitch GTA 6 Stream VODs & Creator Archives
+    candidates: List[Dict[str, Any]] = []
+    seen_ids = set()
 
-    if twitch_candidates:
-        selected = twitch_candidates[0]
-        logger.info(
-            f"🎯 Selected Twitch Stream VOD: [{selected['channel']}] ({selected['views']:,} views) - {selected['title']}"
-        )
-        return selected
+    twitch_gta6 = get_top_twitch_vods(primary_query, limit=40, min_views=min_views)
+    for c in twitch_gta6:
+        if c["video_id"] not in seen_ids:
+            seen_ids.add(c["video_id"])
+            candidates.append(c)
 
-    # 3. Fallback to YouTube VODs
-    logger.info("Checking YouTube VODs fallback...")
-    yt_candidates = get_top_youtube_vods(primary_query, limit=10, min_views=min_views)
-    if not yt_candidates and fallback_query:
-        yt_candidates = get_top_youtube_vods(fallback_query, limit=10, min_views=min_views)
+    # Check top creator archives for any fresh GTA streams
+    creator_vods = get_creator_gta_vods()
+    for c in creator_vods:
+        if c["video_id"] not in seen_ids:
+            seen_ids.add(c["video_id"])
+            candidates.append(c)
 
-    if yt_candidates:
-        selected = yt_candidates[0]
-        logger.info(
-            f"🎯 Selected YouTube Stream VOD: [{selected['channel']}] ({selected['views']:,} views) - {selected['title']}"
-        )
-        return selected
+    # 3. Fallback to GTA 5 top VODs if candidates are low
+    if len(candidates) < 5 and fallback_query:
+        twitch_gta5 = get_top_twitch_vods(fallback_query, limit=30, min_views=min_views)
+        for c in twitch_gta5:
+            if c["video_id"] not in seen_ids:
+                seen_ids.add(c["video_id"])
+                candidates.append(c)
 
-    logger.info("No unclipped English stream VODs found meeting criteria.")
-    return None
+    if not candidates:
+        logger.info("No unclipped English Twitch stream VODs found meeting criteria.")
+        return None
+
+    # Sort remaining candidates by views to clip the highest impact moments first
+    candidates.sort(key=lambda x: x["views"], reverse=True)
+
+    selected = candidates[0]
+    logger.info(
+        f"🎯 Next in Queue: [{selected['channel']}] ({selected['views']:,} views) - {selected['title']}"
+    )
+    logger.info(f"   URL: {selected['url']} | Remaining in queue: {len(candidates)}")
+
+    return selected

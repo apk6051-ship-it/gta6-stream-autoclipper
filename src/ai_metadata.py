@@ -46,21 +46,22 @@ Return ONLY valid JSON matching this schema:
   "tags": ["tag1", "tag2", "tag3"]
 }}"""
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"response_mime_type": "application/json"}
-            }
+            for model_name in ["gemini-1.5-flash", "gemini-2.0-flash"]:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"response_mime_type": "application/json"}
+                }
 
-            resp = requests.post(url, json=payload, timeout=20)
-            if resp.status_code == 200:
-                data = resp.json()
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
-                metadata = json.loads(text)
-                logger.info(f"✨ Gemini Generated Title: {metadata.get('title')}")
-                return metadata
-            else:
-                logger.warning(f"Gemini API returned status {resp.status_code}: {resp.text[:150]}")
+                resp = requests.post(url, json=payload, timeout=20)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    metadata = json.loads(text)
+                    logger.info(f"✨ Gemini ({model_name}) Generated Title: {metadata.get('title')}")
+                    return metadata
+                else:
+                    logger.warning(f"Gemini API ({model_name}) returned status {resp.status_code}: {resp.text[:150]}")
         except Exception as e:
             logger.warning(f"Gemini metadata generation failed: {e}. Using smart fallback.")
 
