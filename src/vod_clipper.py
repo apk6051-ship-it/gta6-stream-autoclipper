@@ -67,6 +67,7 @@ def find_best_highlight_timestamp(
     - First Priority: YouTube 'Most Replayed' heatmap peak.
     - Second Priority: Gameplay chapter boundaries (e.g., 'Grand Theft Auto VI' chapter).
     - Third Priority: Action-center window inside video.
+    Caps seek to max 3 hours (10,800s) to keep HLS download instantaneous even on 48h streams.
     """
     duration = float((info.get("duration") if info else None) or default_duration or 600.0)
     heatmap = info.get("heatmap") if info else None
@@ -75,7 +76,7 @@ def find_best_highlight_timestamp(
     if heatmap and len(heatmap) > 0:
         valid_points = [
             pt for pt in heatmap
-            if (duration * 0.10) <= pt.get("start_time", 0) <= (duration * 0.90)
+            if (duration * 0.10) <= pt.get("start_time", 0) <= min(duration * 0.90, 10800.0)
         ]
         if valid_points:
             peak = max(valid_points, key=lambda x: x.get("value", 0))
@@ -93,14 +94,15 @@ def find_best_highlight_timestamp(
     ]
 
     if gta_chapters:
-        # Pick the longest GTA gameplay chapter
-        best_chapter = max(gta_chapters, key=lambda c: c.get("end_time", 0) - c.get("start_time", 0))
+        # Pick the GTA gameplay chapter that starts earliest or is longest
+        best_chapter = gta_chapters[0]
         ch_start = float(best_chapter.get("start_time", 0))
         ch_end = float(best_chapter.get("end_time", duration))
         ch_duration = max(clip_duration * 2, ch_end - ch_start)
 
-        # Target 45% into the gameplay chapter (where peak action happens)
-        highlight_start = ch_start + (ch_duration * 0.45)
+        # Target 35% into the gameplay chapter, capped at 2.5 hours into stream
+        highlight_start = min(ch_start + (ch_duration * 0.35), 9000.0)
+        highlight_start = max(ch_start + 60.0, highlight_start)  # Skip very first minute of chapter
         highlight_end = min(duration, highlight_start + clip_duration)
         logger.info(
             f"🎯 Chapter '{best_chapter.get('title')}' targeted: highlight at {format_timestamp(highlight_start)} "
@@ -108,8 +110,8 @@ def find_best_highlight_timestamp(
         )
         return highlight_start, highlight_end
 
-    # 3. Core action-center window (35% to 50% into stream)
-    fallback_start = max(30.0, duration * 0.40)
+    # 3. Core action-center window (capped at max 2.5 hours to ensure instant HLS slicing)
+    fallback_start = min(max(60.0, duration * 0.35), 7200.0)
     fallback_end = min(duration, fallback_start + clip_duration)
     logger.info(
         f"Using action-center highlight window at {format_timestamp(fallback_start)} (Total Duration: {format_timestamp(duration)})"
@@ -137,12 +139,10 @@ def slice_video_highlight(
     cmd = [
         "yt-dlp",
         "--download-sections", f"*{start_str}-{end_str}",
-        "--force-keyframes-at-cuts",
-        "--user-agent", USER_AGENT,
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "-o", output_path,
         "--no-check-certificates",
+        "--user-agent", USER_AGENT,
+        "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
+        "-o", output_path,
         "--no-playlist",
     ]
 
@@ -156,7 +156,7 @@ def slice_video_highlight(
     logger.info(f"Downloading highlight section [{start_str} -> {end_str}] from {video_url}...")
     try:
         start_time = time.time()
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         elapsed = time.time() - start_time
 
         if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 100_000:
@@ -174,7 +174,7 @@ def slice_video_highlight(
                 "--no-check-certificates",
                 video_url
             ]
-            res2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=120)
+            res2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=180)
             if res2.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 100_000:
                 logger.info(f"Highlight slice downloaded successfully via fallback format: {output_path}")
                 return True
