@@ -43,6 +43,10 @@ jobs:
             echo '${{ secrets.YOUTUBE_TOKEN }}' > token.json
             echo "token.json restored."
           fi
+          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+            echo '${{ secrets.YOUTUBE_COOKIES }}' > cookies.txt
+            echo "cookies.txt restored."
+          fi
 
       - name: Run Auto-Clipper Session
         env:

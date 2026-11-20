@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 NON_ENGLISH_KEYWORDS = [
     "español", "espanol", "русский", "deutsch", "francais", "français",
     "italiano", "portugues", "português", "hindi", "tamil", "telugu",
-    "vídeo", "completo", "capítulo", "capitulo", "jugando", "día", "dia"
+    "vídeo", "completo", "capítulo", "capitulo", "jugando", "día", "dia",
+    "estuve", "aquí", "aqui", "directo", "primer", "primera", "juego",
+    "le jeu", "est là", "spielt", "aus", "mit", "und", "der", "die", "das"
 ]
 
 

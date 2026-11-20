@@ -1,10 +1,10 @@
 """
 VOD & Uploaded Video Highlight Clipper
-Extracts the most viral/high-retention moment from ANY uploaded YouTube video or VOD:
-1. Checks YouTube's "Most Replayed" Heatmap for peak replay timestamp.
-2. If no heatmap, uses smart action-center heuristic.
-3. Uses smart partial downloading (--download-sections) with Android/Web player client
-   to reliably bypass datacenter IP restrictions on GitHub Actions/cloud runners.
+Extracts the most viral/high-retention moment from ANY Twitch Stream VOD or YouTube Walkthrough:
+1. Checks YouTube's 'Most Replayed' Heatmap (for YouTube videos).
+2. Uses high-energy action heuristic (for Twitch & YouTube).
+3. Downloads ONLY the 35s highlight slice directly without downloading the full stream.
+4. Supports cookies.txt if provided in GitHub Secrets.
 """
 
 import os
@@ -31,20 +31,26 @@ def get_video_info(video_url: str) -> Optional[Dict[str, Any]]:
     """Fetches video metadata including duration, heatmap, and title."""
     cmd = [
         "yt-dlp",
-        "--extractor-args", "youtube:player_client=tv_embedded,mweb",
         "--no-check-certificates",
         "--user-agent", USER_AGENT,
         "--dump-json",
         "--skip-download",
         "--no-playlist",
-        video_url,
     ]
+
+    if "youtube.com" in video_url or "youtu.be" in video_url:
+        cmd.extend(["--extractor-args", "youtube:player_client=tv_embedded,mweb"])
+    if os.path.exists("cookies.txt"):
+        cmd.extend(["--cookies", "cookies.txt"])
+
+    cmd.append(video_url)
+
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
         if res.returncode == 0 and res.stdout.strip():
             return json.loads(res.stdout)
         else:
-            logger.warning(f"yt-dlp metadata fetch notice: {res.stderr[:200]}")
+            logger.warning(f"Metadata notice: {res.stderr[:200]}")
     except Exception as e:
         logger.warning(f"Error fetching metadata for {video_url}: {e}")
     return None
@@ -64,7 +70,6 @@ def find_best_highlight_timestamp(
     heatmap = info.get("heatmap") if info else None
 
     if heatmap and len(heatmap) > 0:
-        # Ignore first 10% and last 10% to skip intro/outro
         valid_points = [
             pt for pt in heatmap
             if (duration * 0.10) <= pt.get("start_time", 0) <= (duration * 0.90)
@@ -77,10 +82,10 @@ def find_best_highlight_timestamp(
             logger.info(f"Heatmap Peak detected at {format_timestamp(peak_start)} (Score: {peak.get('value'):.2f})")
             return clip_start, clip_end
 
-    # Fallback heuristic: 35% into the video (where core gameplay action occurs)
+    # Core action-center window (35% into the stream where major missions/stunts occur)
     fallback_start = max(30.0, duration * 0.35)
     fallback_end = min(duration, fallback_start + clip_duration)
-    logger.info(f"Using action-center heuristic at {format_timestamp(fallback_start)} (Duration: {format_timestamp(duration)})")
+    logger.info(f"Using action-center highlight window at {format_timestamp(fallback_start)} (Total Duration: {format_timestamp(duration)})")
     return fallback_start, fallback_end
 
 
@@ -91,8 +96,8 @@ def slice_video_highlight(
     output_path: str
 ) -> bool:
     """
-    Downloads ONLY the specified time window directly from YouTube.
-    Avoids downloading the full video.
+    Downloads ONLY the specified time window directly from Twitch or YouTube.
+    Avoids downloading the full multi-hour stream.
     """
     start_str = format_timestamp(start_sec)
     end_str = format_timestamp(end_sec)
@@ -107,21 +112,29 @@ def slice_video_highlight(
 
     cmd = [
         "yt-dlp",
-        "--extractor-args", "youtube:player_client=tv_embedded,mweb",
         "--no-check-certificates",
         "--user-agent", USER_AGENT,
         "--download-sections", section_arg,
         "--force-overwrites",
+    ]
+
+    if "youtube.com" in video_url or "youtu.be" in video_url:
+        cmd.extend(["--extractor-args", "youtube:player_client=tv_embedded,mweb"])
+    if os.path.exists("cookies.txt"):
+        cmd.extend(["--cookies", "cookies.txt"])
+
+    # For Twitch VODs, download best mp4
+    cmd.extend([
         "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
         "-o", output_path,
         video_url,
-    ]
+    ])
 
-    logger.info(f"Downloading highlight section [{start_str} -> {end_str}]...")
+    logger.info(f"Downloading highlight section [{start_str} -> {end_str}] from {video_url}...")
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
     if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        logger.info(f"Highlight slice downloaded successfully: {output_path}")
+        logger.info(f"Highlight slice downloaded successfully: {output_path} ({os.path.getsize(output_path):,} bytes)")
         return True
     else:
         logger.error(f"Failed to slice video: {res.stderr[:300]}")
