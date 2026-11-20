@@ -47,6 +47,8 @@ def get_top_streamed_vods(search_query: str, limit: int = 15, min_views: int = 2
 
     cmd = [
         "yt-dlp",
+        "--extractor-args", "youtube:player_client=tv_embedded,mweb",
+        "--no-check-certificates",
         f"ytsearch{limit}:{search_term}",
         "--dump-json",
         "--flat-playlist",

@@ -31,7 +31,7 @@ def get_video_info(video_url: str) -> Optional[Dict[str, Any]]:
     """Fetches video metadata including duration, heatmap, and title."""
     cmd = [
         "yt-dlp",
-        "--extractor-args", "youtube:player_client=android,web",
+        "--extractor-args", "youtube:player_client=tv_embedded,mweb",
         "--no-check-certificates",
         "--user-agent", USER_AGENT,
         "--dump-json",
@@ -107,7 +107,7 @@ def slice_video_highlight(
 
     cmd = [
         "yt-dlp",
-        "--extractor-args", "youtube:player_client=android,web",
+        "--extractor-args", "youtube:player_client=tv_embedded,mweb",
         "--no-check-certificates",
         "--user-agent", USER_AGENT,
         "--download-sections", section_arg,
