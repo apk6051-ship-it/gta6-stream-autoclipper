@@ -65,12 +65,12 @@ def run_session():
 
     # Step 2: Fetch metadata and locate peak replay moment
     info = get_video_info(video["url"])
-    if not info:
-        logger.error(f"Failed to fetch metadata for {video['url']}")
-        sys.exit(1)
-
     clip_duration = config.get("vod_clipping", {}).get("clip_duration_sec", 35)
-    start_sec, end_sec = find_best_highlight_timestamp(info, clip_duration=clip_duration)
+    start_sec, end_sec = find_best_highlight_timestamp(
+        info=info,
+        default_duration=float(video.get("duration") or 600.0),
+        clip_duration=clip_duration,
+    )
 
     timestamp_str = time.strftime("%Y%m%d_%H%M%S")
     os.makedirs("clips", exist_ok=True)
@@ -79,8 +79,10 @@ def run_session():
 
     # Step 3: Download ONLY the 35s highlight
     if not slice_video_highlight(video["url"], start_sec, end_sec, raw_slice_path):
-        logger.error("Failed to download highlight slice.")
-        sys.exit(1)
+        logger.warning(f"Failed to download highlight slice for {video['url']}. Marking video as skipped.")
+        if video.get("video_id"):
+            mark_video_processed(video["video_id"])
+        sys.exit(0)
 
     # Step 4: Convert to 9:16 vertical Short
     if not processor.format_for_shorts(raw_slice_path, short_clip_path):
