@@ -23,7 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AutoClipper")
 
-from src.discovery import discover_content, mark_video_processed
+from src.discovery import discover_content, mark_video_processed, get_top_uploaded_videos
 from src.twitch_chat import TwitchChatMonitor
 from src.youtube_chat import YouTubeChatMonitor
 from src.recorder import StreamRecorder
@@ -192,6 +192,18 @@ def run_session():
 
     if chat_monitor:
         chat_monitor.start()
+        time.sleep(4)
+        if hasattr(chat_monitor, "connected") and not chat_monitor.connected:
+            logger.warning("Could not connect to live chat for this stream (chat disabled or restricted).")
+            chat_monitor.stop()
+            recorder.stop()
+            vod_cfg = config.get("vod_clipping", {})
+            if vod_cfg.get("enabled", True):
+                logger.info("Switching immediately to Uploaded Video / VOD mode...")
+                videos = get_top_uploaded_videos(config.get("discovery", {}).get("fallback_game_query", "Grand Theft Auto V"))
+                if videos:
+                    handle_vod_session(videos[0], config, processor, uploader)
+            return
 
     env_mins = os.environ.get("SESSION_MINUTES")
     session_minutes = int(env_mins) if env_mins else config.get("scheduler", {}).get("stream_session_minutes", 115)

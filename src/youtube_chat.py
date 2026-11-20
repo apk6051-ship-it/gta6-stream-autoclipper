@@ -34,6 +34,7 @@ class YouTubeChatMonitor:
         self.cooldown_sec = cooldown_sec
 
         self.running = False
+        self.connected = False
         self.chat = None
         self.message_timestamps: deque = deque()
         self.history_windows: deque = deque(maxlen=max(2, baseline_sec // window_sec))
@@ -58,7 +59,9 @@ class YouTubeChatMonitor:
     def _run(self):
         try:
             self.chat = pytchat.create(video_id=self.video_id, interruptable=False)
+            self.connected = True
         except Exception as e:
+            self.connected = False
             logger.error(f"Failed to attach to YouTube live chat: {e}")
             return
 

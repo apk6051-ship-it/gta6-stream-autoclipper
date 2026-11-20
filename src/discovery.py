@@ -109,13 +109,16 @@ def get_top_youtube_streams(search_query: str, limit: int = 5) -> List[Dict[str,
                 continue
             try:
                 item = json.loads(line)
-                viewers = item.get("concurrent_view_count") or item.get("view_count") or 0
+                # Ensure the stream is genuinely currently live and has concurrent viewers
+                live_viewers = item.get("concurrent_view_count")
+                if not live_viewers or item.get("live_status") != "is_live":
+                    continue
                 streams.append({
                     "platform": "youtube",
                     "channel": item.get("uploader", "Unknown"),
                     "display_name": item.get("channel", "Unknown"),
                     "title": item.get("title", ""),
-                    "viewers": int(viewers) if viewers else 0,
+                    "viewers": int(live_viewers),
                     "url": item.get("url") or f"https://www.youtube.com/watch?v={item.get('id')}",
                     "video_id": item.get("id"),
                 })
